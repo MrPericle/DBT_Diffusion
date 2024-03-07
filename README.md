@@ -37,7 +37,10 @@ DBT_Diffusion is a tool designed to augment Digital Breast Tomosynthesis (DBT) d
 
 ## Usage
 
-1. **Modify Dataset Path:**
+1. **Ensure Dataset Format:**
+    - Make sure your DBT dataset contains files in the `.dcm` (DICOM) format. This is essential for compatibility with the processing pipeline.
+
+2. **Modify Dataset Path:**
     - Before running the training script, ensure to modify the path to your own DBT dataset. Open `multi_gpu_training.py` and locate the line specifying the dataset path:
 
     ```python
@@ -46,7 +49,7 @@ DBT_Diffusion is a tool designed to augment Digital Breast Tomosynthesis (DBT) d
 
     Replace `/path/to/your/dbt/dataset` with the actual path to your DBT dataset.
 
-2. Launch the multi-GPU training script:
+3. Launch the multi-GPU training script:
 
     ```bash
     torchrun --standalone --nnodes=<N_NODES> --nproc_per_node=<YOUR_GPUS> multi_gpu_training.py
@@ -54,7 +57,7 @@ DBT_Diffusion is a tool designed to augment Digital Breast Tomosynthesis (DBT) d
 
     Ensure to replace `<N_NODES>` and `<YOUR_GPUS>` with the appropriate values for your setup.
 
-3. Follow the on-screen instructions for additional configuration and parameter adjustments.
+4. Follow the on-screen instructions for additional configuration and parameter adjustments.
 
 ## Multi-GPU Support
 
