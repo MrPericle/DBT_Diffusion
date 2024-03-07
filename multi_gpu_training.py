@@ -1,3 +1,17 @@
+"""
+DBT_Diffusion: Denoising Diffusion Probabilistic Models for Digital Breast Tomosynthesis Augmentation
+
+Author: MrPericle
+Email: l.pergamo001@studenti.uniparthenope.it
+Version: 1.0.0
+
+Description:
+This script implements multi-GPU training for the DBT_Diffusion project. It utilizes Denoising Diffusion Probabilistic Models to generate synthetic DBT samples for dataset augmentation.
+
+Usage:
+torchrun --standalone --nnodes=<N_NODES> --nproc_per_node=<YOUR_GPUS> multi_gpu_training.py
+"""
+
 import torch
 from DBT_multigpu_diffusion import Unet3D, GaussianDiffusion, Trainer,Duke_DBT_Dataset
 import os
