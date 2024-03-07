@@ -57,8 +57,8 @@ def main():
     optimizer=Adam(diffusion.parameters(),lr=1e-4)
 
     trainer = Trainer(
-        diffusion,
-        "/projects/data/medical_imaging/duke2/BCS_DBT_Train",
+        diffusion_model=diffusion,
+        folder="/projects/data/medical_imaging/duke2/BCS_DBT_Train",
         train_batch_size=128,
         train_lr=1e-4,
         save_and_sample_every=35,
