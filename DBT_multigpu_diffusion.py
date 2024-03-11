@@ -10,7 +10,8 @@ import torchio as tio
 import os
 import csv
 import itertools
-
+import time
+import h5py
 
 import numpy as np
 from pydicom import dcmread
@@ -34,16 +35,11 @@ import torch.multiprocessing as mp
 from torch.utils.data.distributed import DistributedSampler
 from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
-
+import torch.distributed
 
 # helpers functions
 
 PREPROCESSING_TRANSORMS=tio.Compose([
-    tio.RescaleIntensity(out_min_max=(-1, 1)),
-    tio.transforms.Resize((8,120,120))
-])
-
-PREPROCESSING_TRANSORMS2=tio.Compose([
     tio.RescaleIntensity(out_min_max=(-1, 1)),
     tio.transforms.Resize((256,256,32)),
     tio.transforms.Resize((128,128,16)),
@@ -60,7 +56,7 @@ def exists(x):
     return x is not None
 
 def loss_logger(log):
-    with open("../results/log.csv" , "a+",newline='') as log_loss:
+    with open("../DDP_results/log.csv" , "a+",newline='') as log_loss:
         writer=csv.writer(log_loss)
         writer.writerows(log)
 
@@ -714,7 +710,7 @@ class GaussianDiffusion(nn.Module):
         return posterior_mean, posterior_variance, posterior_log_variance_clipped
 
     def p_mean_variance(self, x, t, clip_denoised: bool, cond = None, cond_scale = 1.):
-        x_recon = self.predict_start_from_noise(x, t=t, noise = self.denoise_fn.forward_with_cond_scale(x, t, cond = cond, cond_scale = cond_scale))
+        x_recon = self.predict_start_from_noise(x, t=t, noise = self.denoise_fn.module.forward_with_cond_scale(x, t, cond = cond, cond_scale = cond_scale))
 
         if clip_denoised:
             s = 1.
@@ -800,9 +796,9 @@ class GaussianDiffusion(nn.Module):
         if is_list_str(cond):
             cond = bert_embed(tokenize(cond), return_cls_repr = self.text_use_bert_cls)
             cond = cond.to(device)
-
+        start_time = time.time()
         x_recon = self.denoise_fn(x_noisy, t, cond = cond, **kwargs)
-
+        print(f"time for a unet forward : {time.time()-start_time}")
         if self.loss_type == 'l1':
             loss = F.l1_loss(noise, x_recon)
         elif self.loss_type == 'l2':
@@ -822,11 +818,8 @@ class GaussianDiffusion(nn.Module):
         #print("GaussianDiffusion ok")
         return self.p_losses(x, t, *args, **kwargs)
 
-# trainer class
 
-
-
-# tensor of shape (channels, slice, height, width) -> gif
+# tensor of shape (channels, slice, height, width) -> tensor
 
 def tensor_to_gif(tensor, path, duration = 120, loop = 0, optimize = True):
     images = map(T.ToPILImage(), tensor.unbind(dim = 1))
@@ -834,7 +827,10 @@ def tensor_to_gif(tensor, path, duration = 120, loop = 0, optimize = True):
     first_img.save(path, save_all = True, append_images = rest_imgs, duration = duration, loop = loop, optimize = optimize)
     return images
 
-# gif -> (channels, slice, height, width) tensor
+def save_4d_tensor_as_hdf5(tensor, output_file):
+    # Assuming tensor shape is (channel, depth, height, width)
+    with h5py.File(output_file, 'w') as hf:
+        hf.create_dataset('tensor_data', data=tensor)
 
 def identity(t, *args, **kwargs):
     return t
@@ -861,28 +857,20 @@ class Duke_DBT_Dataset(Dataset):
         self.root_dir = root_dir
         self.train = train
         #self.img_path = os.path.join(root_dir,'train') if self.train == True else os.path.join(root_dir,'test') #aggiungere opzione per validation ma al momento manca nel dataset
-        self.img_path = self.get_images()
-        self.preprocessing = PREPROCESSING_TRANSORMS2
+        self.img_path = [f"{self.root_dir}/{filename}" for filename in os.listdir(self.root_dir) if filename.endswith('.h5')]
+        #self.preprocessing = PREPROCESSING_TRANSORMS
         self.transforms = TRAIN_TRANSFORMS if Train_Transform else None
-
-    def get_images(self):
-        imagDir = []
-        for dir in os.listdir(self.root_dir):
-            for root,_,files in os.walk(os.path.join(self.root_dir,dir)):
-                for file in files:
-                    if file.endswith('.dcm'):
-                        imagDir.append(os.path.join(root,file))
-        return imagDir
 
     def __len__(self):
         return len(self.img_path)
 
     def __getitem__(self, index):
-        fpath = self.img_path[index]
-        img = tio.ScalarImage(fpath)
-        img = self.preprocessing(img)
-        #img = self.transforms(img)
-        return img.data.permute(0,-1,2,1)
+        with h5py.File(self.img_path[index], 'r') as hf:
+            img = hf['tensor_data'][:]
+
+        img=torch.from_numpy(img)
+        img = torch.squeeze(img,dim=0)
+        return img
 
 
 class Trainer(object):
@@ -925,7 +913,7 @@ class Trainer(object):
         self.batch_size = train_batch_size
         self.image_size = diffusion_model.image_size
         self.gradient_accumulate_every = gradient_accumulate_every
-        self.train_num_steps = train_num_steps
+       # self.train_num_steps = train_num_steps
         self.num_epoch = num_epoch
 
         image_size = diffusion_model.image_size
@@ -938,7 +926,6 @@ class Trainer(object):
             print(f'found {len(self.ds)} images as DICOM files at {folder}')
         assert len(self.ds) > 0, 'need to have at least 1 .dcm to start training (although 1 is not great, try 100k)'
 
-        #self.dl = cycle(data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=False, sampler=DistributedSampler(self.ds)))
         self.dl = data.DataLoader(self.ds, batch_size = train_batch_size, shuffle=False, sampler=DistributedSampler(self.ds),pin_memory = True)
         self.opt = optimizer
 
@@ -984,38 +971,18 @@ class Trainer(object):
             all_milestones = [int(p.stem.split('-')[-1]) for p in Path(self.results_folder).glob('**/*.pt')]
             assert len(all_milestones) > 0, 'need to have at least one milestone to load from latest checkpoint (milestone == -1)'
             milestone = max(all_milestones)
-        dist.barrier()
+        torch.distributed.barrier()
         map_location = {'cuda:%d' % 0: 'cuda:%d' % self.gpu_id}
-        print("START LOADING")
         data = torch.load(str(self.results_folder / f'model-{milestone}.pt'),map_location=map_location)
 
         self.step = data['step']
         self.epoch = data['epoch']
 
-        for key in list(data['model'].keys()):
-            print(f"KEY = {key}")
-            if not key.startswith('module.module.') and key.startswith("module."):
-                new_key ="module."+key
-                data['model'][new_key] = data['model'].pop(key)
-            elif not key.startswith("module.module"):
-                new_key = "module.module."+key
-                data['model'][new_key] = data['model'].pop(key)
-        print(f"!!!KEYS!!!{data['model'].keys()}")
         self.model.module.load_state_dict(data['model'], **kwargs)
 
-        for key in list(data['ema'].keys()):
-            if not key.startswith('module.module.') and key.startswith("module."):
-                new_key ="module."+key
-                data['ema'][new_key] = data['ema'].pop(key)
-
-            elif not key.startswith("module.module."):
-                new_key = "module.module."+key
-                data['ema'][new_key] = data['ema'].pop(key)
-        print(f"!!!EMA_KEYS!!!{data['ema'].keys()}")
         self.ema_model.module.load_state_dict(data['ema'], **kwargs)
 
         self.scaler.load_state_dict(data['scaler'])
-        print("END LOADING")
         return milestone
 
 
@@ -1028,20 +995,18 @@ class Trainer(object):
         assert callable(log_fn)
         if self.gpu_id==0:
             print("Start training\n")
-        log = []
+        loss_logger = []
 
         start_step = self.step
-        #epoch = -1
-        dataloader_iter = iter(itertools.islice(self.dl, self.step, None))
+        self.model.train()
         for epoch in range(self.epoch,self.num_epoch):
-            self.model.train()
             self.dl.sampler.set_epoch(epoch)
             if self.gpu_id == 0:
-                pbar = tqdm(total=len(self.dl),initial=self.step, desc='Training Progress')
+                pbar = tqdm(total=len(self.dl), desc='Training Progress')
                 pbar.set_description(f'epoch:{self.epoch}')
-            for step,data in enumerate(dataloader_iter,start=self.step):
+            for step,data in enumerate(self.dl):
                 data = data.to(self.gpu_id)
-            #while self.step < self.train_num_steps:
+                step_time = time.time()
                 for i in range(self.gradient_accumulate_every):
                     with autocast(enabled = self.amp):
                         loss = self.model(
@@ -1054,7 +1019,7 @@ class Trainer(object):
                 if self.gpu_id == 0:
                     print(f'{self.step}: {loss.item()}')
                     pbar.update(1)
-                    log.append((self.epoch,self.step,loss.item()))
+
 
                 if exists(self.max_grad_norm):
                     self.scaler.unscale_(self.opt)
@@ -1066,17 +1031,17 @@ class Trainer(object):
 
                 if self.step % self.update_ema_every == 0 and self.gpu_id==0:
                     self.step_ema()
-                if self.step % self.save_and_sample_every == 0 and self.step != 0 and self.gpu_id==0:
-                    self.save(self.epoch)
+
                 self.step +=1
+                print(f"total time for a step : {time.time()-step_time}")
 
             self.epoch +=1
             self.step = 0
             if self.gpu_id == 0 :
                 self.save(self.epoch)
-
-            log_fn(log)
-            log.clear()
+                loss_logger.append((self.epoch,loss.item()))
+                log_fn(loss_logger)
+                loss_logger.clear()
 
             if self.gpu_id == 0:
                 pbar.close()
