@@ -132,7 +132,6 @@ class RelativePositionBias(nn.Module):
         return ret
 
     def forward(self, n, device):
-        #print("Relative position bias ok?")
         # Genera indici posizionali per query e chiavi
         q_pos = torch.arange(n, dtype=torch.long, device=device)
         k_pos = torch.arange(n, dtype=torch.long, device=device)
@@ -147,7 +146,6 @@ class RelativePositionBias(nn.Module):
         values = self.relative_attention_bias(rp_bucket)
 
         # Riorganizza il tensore per la compatibilità con il meccanismo di attenzione
-        #print("Relative position bias ok")
         return rearrange(values, 'i j h -> h i j')
 
 # small helper modules
@@ -173,7 +171,6 @@ class Residual(nn.Module):
         self.fn = fn
 
     def forward(self, x, *args, **kwargs):
-        #print("Residial ok")
         return self.fn(x, *args, **kwargs) + x
 
 class SinusoidalPosEmb(nn.Module):
@@ -182,14 +179,12 @@ class SinusoidalPosEmb(nn.Module):
         self.dim = dim
 
     def forward(self, x):
-        #print("Sinusoidal positional embedding ok?")
         device = x.device
         half_dim = self.dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
         emb = x[:, None] * emb[None, :]
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
-        #print("Sinusoidal positional embedding ok")
         return emb
 
 def Upsample(dim):
@@ -205,10 +200,8 @@ class LayerNorm(nn.Module):
         self.gamma = nn.Parameter(torch.ones(1, dim, 1, 1, 1))
 
     def forward(self, x):
-        #print("Layer norm ok?")
         var = torch.var(x, dim = 1, unbiased = False, keepdim = True)
         mean = torch.mean(x, dim = 1, keepdim = True)
-        #print("Layer norm ok")
         return (x - mean) / (var + self.eps).sqrt() * self.gamma
 
 class PreNorm(nn.Module):
@@ -218,9 +211,7 @@ class PreNorm(nn.Module):
         self.norm = LayerNorm(dim)
 
     def forward(self, x, **kwargs):
-        #print("PreNorm ok?")
         x = self.norm(x)
-        #print("PreNorm ok")
         return self.fn(x, **kwargs)
 
 # building block modules
@@ -234,14 +225,12 @@ class Block(nn.Module):
         self.act = nn.SiLU()
 
     def forward(self, x, scale_shift = None):
-        #print("Block ok?")
         x = self.proj(x)
         x = self.norm(x)
 
         if exists(scale_shift):
             scale, shift = scale_shift
             x = x * (scale + 1) + shift
-        #print("Block ok")
         return self.act(x)
 
 class ResnetBlock(nn.Module):
@@ -257,7 +246,6 @@ class ResnetBlock(nn.Module):
         self.res_conv = nn.Conv3d(dim, dim_out, 1) if dim != dim_out else nn.Identity()
 
     def forward(self, x, time_emb = None):
-        #print("ResNet Block ok?")
         scale_shift = None
         if exists(self.mlp):
             assert exists(time_emb), 'time emb must be passed in'
@@ -268,7 +256,6 @@ class ResnetBlock(nn.Module):
         h = self.block1(x, scale_shift = scale_shift)
 
         h = self.block2(h)
-        #print("ResNet Block ok")
         return h + self.res_conv(x)
 
 class SpatialLinearAttention(nn.Module):
@@ -281,7 +268,6 @@ class SpatialLinearAttention(nn.Module):
         self.to_out = nn.Conv2d(hidden_dim, dim, 1)
 
     def forward(self, x):
-        #print("SpatialLinearAttention ok?")
         b, c, f, h, w = x.shape
         x = rearrange(x, 'b c f h w -> (b f) c h w')
         qkv = self.to_qkv(x).chunk(3, dim = 1)
@@ -296,7 +282,6 @@ class SpatialLinearAttention(nn.Module):
         out = torch.einsum('b h d e, b h d n -> b h e n', context, q)
         out = rearrange(out, 'b h c (x y) -> b (h c) x y', h = self.heads, x = h, y = w)
         out = self.to_out(out)
-        #print("SpatialLinearAttention ok")
         return rearrange(out, '(b f) c h w -> b c f h w', b = b)
 
 # attention along space and time
@@ -309,13 +294,11 @@ class EinopsToAndFrom(nn.Module):
         self.fn = fn
 
     def forward(self, x, **kwargs):
-        #print("EinopsToAndFrom ok?")
         shape = x.shape
         reconstitute_kwargs = dict(tuple(zip(self.from_einops.split(' '), shape)))
         x = rearrange(x, f'{self.from_einops} -> {self.to_einops}')
         x = self.fn(x, **kwargs)
         x = rearrange(x, f'{self.to_einops} -> {self.from_einops}', **reconstitute_kwargs)
-        #print("EinopsToAndFrom ok")
         return x
 
 class Attention(nn.Module):
@@ -341,16 +324,12 @@ class Attention(nn.Module):
         pos_bias = None,
         focus_present_mask = None
     ):
-        #print("Attention ok?")
         n, device = x.shape[-2], x.device
-        #print("Attention 0")
         qkv = self.to_qkv(x).chunk(3, dim = -1)
-        #print("Attention 1")
         if exists(focus_present_mask) and focus_present_mask.all():
             # if all batch samples are focusing on present
             # it would be equivalent to passing that token's values through to the output
             values = qkv[-1]
-            #print("Attention ok")
             return self.to_out(values)
 
         # split out heads
@@ -360,7 +339,6 @@ class Attention(nn.Module):
         #print("Attention 2")
         q = q * self.scale
         # rotate positions into queries and keys for time attention
-        #print("Attention 3")
         if exists(self.rotary_emb):
             q = self.rotary_emb.rotate_queries_or_keys(q)
             k = self.rotary_emb.rotate_queries_or_keys(k)
@@ -369,7 +347,6 @@ class Attention(nn.Module):
         sim = einsum('... h i d, ... h j d -> ... h i j', q, k)
 
         # relative positional bias
-        #print("Attention 4")
         if exists(pos_bias):
             sim = sim + pos_bias
         if exists(focus_present_mask) and not (~focus_present_mask).all():
@@ -384,17 +361,12 @@ class Attention(nn.Module):
 
             sim = sim.masked_fill(~mask, -torch.finfo(sim.dtype).max)
         # numerical stability
-        #print("Attention 5")
         sim = sim - sim.amax(dim = -1, keepdim = True).detach()
-        #print("Attention 6")
         attn = sim.softmax(dim = -1)
-        #print("Attention 7")
         # aggregate values
 
         out = einsum('... h i j, ... h j d -> ... h i d', attn, v)
-        #print("Attention 8")
         out = rearrange(out, '... h n d -> ... n (h d)')
-        #print("Attention ok")
         return self.to_out(out)
 
 # model
@@ -535,20 +507,14 @@ class Unet3D(nn.Module):
         focus_present_mask = None,
         prob_focus_present = 0.  # probability at which a given batch sample will focus on the present (0. is all off, 1. is completely arrested attention across time)
     ):
-        #print("Unet ok?")
         assert not (self.has_cond and not exists(cond)), 'cond must be passed in if cond_dim specified'
         batch, device = x.shape[0], x.device
         focus_present_mask = default(focus_present_mask, lambda: prob_mask_like((batch,), prob_focus_present, device = device))
         time_rel_pos_bias = self.time_rel_pos_bias(x.shape[2], device = x.device)
-        #print(f"initial shape: {x.shape}")
         x = self.init_conv(x)
-        #print(f"Unet step 1 -> {x.shape}")
         x = self.init_temporal_attn(x, pos_bias = time_rel_pos_bias) #TU SEI IL PROBLEMA
-        #print(f"Unet step 2 ->{x.shape}")
         r = x.clone()
-        #print(f"Unet step 3 ->{x.shape}")
         t = self.time_mlp(time) if exists(self.time_mlp) else None
-        #print(f"Unet step 4 ->{x.shape}")
         # classifier free guidance
         if self.has_cond:
             batch, device = x.shape[0], x.device
@@ -557,45 +523,26 @@ class Unet3D(nn.Module):
             t = torch.cat((t, cond), dim = -1)
 
         h = []
-        #print(f"Unet step 5 -> {x.shape}")
         for block1, block2, spatial_attn, temporal_attn, downsample in self.downs:
             x = block1(x, t)
-            #print(f"Unet step 5.a -> {x.shape}")
             x = block2(x, t)
-            #print(f"Unet step 5.b -> {x.shape}")
             x = spatial_attn(x)
-            #print(f"Unet step 5.c -> {x.shape}")
             x = temporal_attn(x, pos_bias = time_rel_pos_bias, focus_present_mask = focus_present_mask)
-            #print(f"Unet step 5.d -> {x.shape}")
             h.append(x)
             x = downsample(x)
-            #print(f"Unet step 5.e -> {x.shape}")
-        #print(f"Unet step 6 -> {x.shape}")
         x = self.mid_block1(x, t)
-        #print(f"Unet step 7 -> {x.shape}")
         x = self.mid_spatial_attn(x)
-        #print(f"Unet step 8 -> {x.shape}")
         x = self.mid_temporal_attn(x, pos_bias = time_rel_pos_bias, focus_present_mask = focus_present_mask)
-        #print(f"Unet step 9 -> {x.shape}")
         x = self.mid_block2(x, t)
-        #print(f"Unet step 10 -> {x.shape}")
         for block1, block2, spatial_attn, temporal_attn, upsample in self.ups:
             x = torch.cat((x, h.pop()), dim = 1)
-            #print(f"Unet step 10.a -> {x.shape}")
             x = block1(x, t)
-            #print(f"Unet step 10.b -> imag shape = {x.shape}")
             x = block2(x, t)
-            #print(f"Unet step 10.c -> {x.shape}")
             x = spatial_attn(x)
-            #print(f"Unet step 10.d -> {x.shape}")
             x = temporal_attn(x, pos_bias = time_rel_pos_bias, focus_present_mask = focus_present_mask)
-            #print(f"Unet step 10.e -> {x.shape}")
             x = upsample(x)
-            #print(f"Unet step 10.f -> {x.shape}")
 
         x = torch.cat((x, r), dim = 1)
-        #print(f"Unet step 11 -> {x.shape}")
-        #print("Unet ok")
         return self.final_conv(x)
 
 # gaussian diffusion trainer class
@@ -798,7 +745,6 @@ class GaussianDiffusion(nn.Module):
             cond = cond.to(device)
         start_time = time.time()
         x_recon = self.denoise_fn(x_noisy, t, cond = cond, **kwargs)
-        print(f"time for a unet forward : {time.time()-start_time}")
         if self.loss_type == 'l1':
             loss = F.l1_loss(noise, x_recon)
         elif self.loss_type == 'l2':
@@ -809,17 +755,14 @@ class GaussianDiffusion(nn.Module):
         return loss
 
     def forward(self, x, *args, **kwargs):
-        #print("GaussianDiffusion ok?")
         b, device, img_size, = x.shape[0], x.device, self.image_size
         print(device)
         check_shape(x, 'b c f h w', c = self.channels, f = self.num_slices, h = img_size, w = img_size)
         t = torch.randint(0, self.num_timesteps, (b,), device=device).long()
         x = normalize_img(x)
-        #print("GaussianDiffusion ok")
         return self.p_losses(x, t, *args, **kwargs)
 
-
-# tensor of shape (channels, slice, height, width) -> tensor
+# tensor of shape (channels, slice, height, width) -> gif
 
 def tensor_to_gif(tensor, path, duration = 120, loop = 0, optimize = True):
     images = map(T.ToPILImage(), tensor.unbind(dim = 1))
@@ -827,10 +770,7 @@ def tensor_to_gif(tensor, path, duration = 120, loop = 0, optimize = True):
     first_img.save(path, save_all = True, append_images = rest_imgs, duration = duration, loop = loop, optimize = optimize)
     return images
 
-def save_4d_tensor_as_hdf5(tensor, output_file):
-    # Assuming tensor shape is (channel, depth, height, width)
-    with h5py.File(output_file, 'w') as hf:
-        hf.create_dataset('tensor_data', data=tensor)
+# gif -> (channels, slice, height, width) tensor
 
 def identity(t, *args, **kwargs):
     return t
@@ -856,20 +796,35 @@ class Duke_DBT_Dataset(Dataset):
     def __init__(self,root_dir,train = True,Train_Transform = True):
         self.root_dir = root_dir
         self.train = train
-        #self.img_path = os.path.join(root_dir,'train') if self.train == True else os.path.join(root_dir,'test') #aggiungere opzione per validation ma al momento manca nel dataset
         self.img_path = [f"{self.root_dir}/{filename}" for filename in os.listdir(self.root_dir) if filename.endswith('.h5')]
         #self.preprocessing = PREPROCESSING_TRANSORMS
         self.transforms = TRAIN_TRANSFORMS if Train_Transform else None
+
+    def get_images(self):
+        imagDir = []
+        for dir in os.listdir(self.root_dir):
+            #for root,_,files in os.walk(os.path.join(self.root_dir,dir)):
+                #for file in files:
+            if dir.endswith('.h5'):
+                imagDir.append(str(os.path.join(self.root_dir,dir)))
+        return imagDir
+
+    def load_4d_tensor_from_hdf5(input_file,*args):
+        with h5py.File(input_file, 'r') as hf:
+            tensor_data = hf['tensor_data'][:]
+        return tensor_data
 
     def __len__(self):
         return len(self.img_path)
 
     def __getitem__(self, index):
         with h5py.File(self.img_path[index], 'r') as hf:
+            # Assuming the dataset in the .h5 file is named 'image_data'
             img = hf['tensor_data'][:]
 
         img=torch.from_numpy(img)
         img = torch.squeeze(img,dim=0)
+        img = self.transforms(img)
         return img
 
 
@@ -901,9 +856,7 @@ class Trainer(object):
         self.model = diffusion_model
         self.ema = EMA(ema_decay)
 
-
         self.ema_model = copy.deepcopy(self.model)
-
 
         self.update_ema_every = update_ema_every
 
@@ -913,7 +866,6 @@ class Trainer(object):
         self.batch_size = train_batch_size
         self.image_size = diffusion_model.image_size
         self.gradient_accumulate_every = gradient_accumulate_every
-       # self.train_num_steps = train_num_steps
         self.num_epoch = num_epoch
 
         image_size = diffusion_model.image_size
@@ -1000,46 +952,49 @@ class Trainer(object):
         start_step = self.step
         self.model.train()
         for epoch in range(self.epoch,self.num_epoch):
+            epoch_loss = 0.0
             self.dl.sampler.set_epoch(epoch)
             if self.gpu_id == 0:
                 pbar = tqdm(total=len(self.dl), desc='Training Progress')
                 pbar.set_description(f'epoch:{self.epoch}')
             for step,data in enumerate(self.dl):
                 data = data.to(self.gpu_id)
-                step_time = time.time()
-                for i in range(self.gradient_accumulate_every):
-                    with autocast(enabled = self.amp):
-                        loss = self.model(
-                            data,
-                            prob_focus_present = prob_focus_present,
-                            focus_present_mask = focus_present_mask
-                        )
-                        self.scaler.scale(loss / self.gradient_accumulate_every).backward()
 
-                if self.gpu_id == 0:
-                    print(f'{self.step}: {loss.item()}')
+                step_time = time.time()
+                with autocast(enabled = self.amp):
+                    loss = self.model(
+                        data,
+                        prob_focus_present = prob_focus_present,
+                        focus_present_mask = focus_present_mask
+                    )
+                    loss = loss / self.gradient_accumulate_every
+                self.scaler.scale(loss).backward()
+
+                epoch_loss += loss.item()/(len(self.dl))
+                print(f'GPU:{self.gpu_id}-step:{self.step}-loss:{loss.item()}')
+                if self.gpu_id==0:
                     pbar.update(1)
 
 
-                if exists(self.max_grad_norm):
-                    self.scaler.unscale_(self.opt)
-                    nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
-
-                self.scaler.step(self.opt)
-                self.scaler.update()
-                self.opt.zero_grad()
+                if ((step+1)%self.gradient_accumulate_every == 0) or ((step+1)==len(self.ds)):
+                    if exists(self.max_grad_norm):
+                        self.scaler.unscale_(self.opt)
+                        nn.utils.clip_grad_norm_(self.model.parameters(), self.max_grad_norm)
+                    self.scaler.step(self.opt)
+                    self.scaler.update()
+                    self.opt.zero_grad()
 
                 if self.step % self.update_ema_every == 0 and self.gpu_id==0:
                     self.step_ema()
 
                 self.step +=1
-                print(f"total time for a step : {time.time()-step_time}")
 
             self.epoch +=1
             self.step = 0
             if self.gpu_id == 0 :
                 self.save(self.epoch)
-                loss_logger.append((self.epoch,loss.item()))
+                print(f"epoch {epoch-1}: loss={epoch_loss}")
+                loss_logger.append((self.epoch,epoch_loss))
                 log_fn(loss_logger)
                 loss_logger.clear()
 
